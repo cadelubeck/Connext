@@ -17,8 +17,9 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; touc
 @media (hover: none) and (pointer: coarse) {
   #touch-ui { display: flex; }
 }
-.tc-group { display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: all; }
-.tc-row   { display: flex; gap: 8px; }
+.tc-dpad   { display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: all; }
+.tc-action { display: flex; align-items: center; pointer-events: all; }
+.tc-row    { display: flex; gap: 6px; }
 .tbtn {
   width: 66px; height: 66px;
   background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.28);
@@ -28,25 +29,25 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; touc
   cursor: pointer; transition: background 0.08s;
 }
 .tbtn:active, .tbtn.pressed { background: rgba(255,255,255,0.32); border-color: rgba(255,255,255,0.7); }
-#tb-space { width: 90px; font-size: 13px; font-weight: bold; letter-spacing: 1px; }
+#tb-space { width: 80px; height: 80px; font-size: 13px; font-weight: bold; letter-spacing: 1px; border-radius: 50%; }
 </style>
 </head>
 <body>
 <div id="game"></div>
 <!-- Touch controls overlay (transparent on desktop, usable on mobile) -->
 <div id="touch-ui">
-  <div class="tc-group">
-    <button class="tbtn" id="tb-left">&#9664;</button>
-  </div>
-  <div class="tc-group">
-    <button class="tbtn" id="tb-up">&#9650;</button>
+  <!-- D-pad on the left -->
+  <div class="tc-dpad">
+    <div class="tc-row"><button class="tbtn" id="tb-up">&#9650;</button></div>
     <div class="tc-row">
-      <button class="tbtn" id="tb-space">ACTION</button>
+      <button class="tbtn" id="tb-left">&#9664;</button>
+      <button class="tbtn" id="tb-down">&#9660;</button>
+      <button class="tbtn" id="tb-right">&#9654;</button>
     </div>
-    <button class="tbtn" id="tb-down">&#9660;</button>
   </div>
-  <div class="tc-group">
-    <button class="tbtn" id="tb-right">&#9654;</button>
+  <!-- Action button on the right -->
+  <div class="tc-action">
+    <button class="tbtn" id="tb-space">ACTION</button>
   </div>
 </div>
 <script>
