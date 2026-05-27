@@ -13,7 +13,7 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; touc
 /* ── Game Boy controller bar ── */
 #gb-ctrl {
   display: none;
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 999;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 9999;
   height: 170px;
   background: linear-gradient(180deg, #1a1a2a 0%, #111118 100%);
   border-top: 2px solid #333355;
@@ -22,9 +22,10 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; touc
   justify-content: space-between;
   padding: 0 28px 18px;
 }
-@media (hover: none) and (pointer: coarse) {
-  #gb-ctrl { display: flex; }
-}
+/* shown via JS touch detection — more reliable than media query */
+#gb-ctrl.visible { display: flex; }
+/* also shrink game area so canvas doesn't hide under controller */
+#game.has-ctrl { height: calc(100% - 170px); }
 
 /* D-pad */
 #gb-dpad { display: grid; grid-template-columns: 54px 54px 54px; grid-template-rows: 54px 54px 54px; }
@@ -73,6 +74,15 @@ html, body { width: 100%; height: 100%; background: #000; overflow: hidden; touc
 // Global touch input — consumed by each scene's update()
 window.tIn = { left:false, right:false, up:false, down:false, space:false, leftTap:false, rightTap:false };
 (function() {
+  // Show controller on any touch-capable device (JS detection is more reliable than CSS media query)
+  function enableCtrl() {
+    document.getElementById('gb-ctrl').classList.add('visible');
+    document.getElementById('game').classList.add('has-ctrl');
+    window.removeEventListener('touchstart', enableCtrl);
+  }
+  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) enableCtrl();
+  else window.addEventListener('touchstart', enableCtrl, { once: true });
+
   function wire(id, onDown, onUp) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -84,7 +94,7 @@ window.tIn = { left:false, right:false, up:false, down:false, space:false, leftT
   wire('dp-right', () => { t.right = true;  t.rightTap = true; }, () => { t.right = false; });
   wire('dp-up',    () => { t.up    = true;  }, () => { t.up    = false; });
   wire('dp-down',  () => { t.down  = true;  }, () => { t.down  = false; });
-  wire('gb-a',     () => { t.space = true; t.leftTap = false; t.rightTap = false; }, () => { t.space = false; });
+  wire('gb-a',     () => { t.space = true;  }, () => { t.space = false; });
   wire('gb-b',     () => { t.space = true;  }, () => { t.space = false; });
 })();
 const W = 800, H = 600;
