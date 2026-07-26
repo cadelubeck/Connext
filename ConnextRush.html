@@ -1,0 +1,1459 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Connext Rush</title>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; touch-action: none; }
+#game { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+
+/* ── Game Boy controller bar ── */
+#gb-ctrl {
+  display: none;
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 9999;
+  height: 170px;
+  background: linear-gradient(180deg, #1a1a2a 0%, #111118 100%);
+  border-top: 2px solid #333355;
+  border-radius: 28px 28px 0 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px 18px;
+}
+/* shown via JS touch detection — more reliable than media query */
+#gb-ctrl.visible { display: flex; }
+/* also shrink game area so canvas doesn't hide under controller */
+#game.has-ctrl { height: calc(100% - 170px); }
+
+/* D-pad */
+#gb-dpad { display: grid; grid-template-columns: 54px 54px 54px; grid-template-rows: 54px 54px 54px; }
+.dp { background: #2b2b3d; border: none; color: #ccc; font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.dp:active, .dp.pressed { background: #44446a; color: #fff; }
+#dp-up    { border-radius: 8px 8px 0 0; grid-column:2; grid-row:1; }
+#dp-left  { border-radius: 8px 0 0 8px; grid-column:1; grid-row:2; }
+#dp-mid   { background: #222233;         grid-column:2; grid-row:2; border-radius: 4px; }
+#dp-right { border-radius: 0 8px 8px 0; grid-column:3; grid-row:2; }
+#dp-down  { border-radius: 0 0 8px 8px; grid-column:2; grid-row:3; }
+
+/* A / B buttons */
+#gb-btns { display: flex; gap: 14px; align-items: center; }
+.gb-btn {
+  width: 62px; height: 62px; border-radius: 50%; border: none;
+  font-size: 20px; font-weight: 900; cursor: pointer;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  box-shadow: 0 4px 0 rgba(0,0,0,0.5);
+  transition: transform 0.08s, box-shadow 0.08s;
+  display: flex; align-items: center; justify-content: center;
+}
+.gb-btn:active, .gb-btn.pressed { transform: translateY(3px); box-shadow: 0 1px 0 rgba(0,0,0,0.5); }
+#gb-a { background: radial-gradient(circle at 35% 35%, #ff4466, #bb1133); color: #fff; }
+#gb-b { background: radial-gradient(circle at 35% 35%, #4488ff, #1133bb); color: #fff; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<!-- Game Boy controller overlay -->
+<div id="gb-ctrl">
+  <div id="gb-dpad">
+    <div></div><button class="dp" id="dp-up">&#9650;</button><div></div>
+    <button class="dp" id="dp-left">&#9664;</button>
+    <div class="dp" id="dp-mid"></div>
+    <button class="dp" id="dp-right">&#9654;</button>
+    <div></div><button class="dp" id="dp-down">&#9660;</button><div></div>
+  </div>
+  <div id="gb-btns">
+    <button class="gb-btn" id="gb-b">B</button>
+    <button class="gb-btn" id="gb-a">A</button>
+  </div>
+</div>
+<script>
+// Global touch input — consumed by each scene's update()
+window.tIn = { left:false, right:false, up:false, down:false, space:false, leftTap:false, rightTap:false };
+(function() {
+  // Show controller on any touch-capable device (JS detection is more reliable than CSS media query)
+  function enableCtrl() {
+    document.getElementById('gb-ctrl').classList.add('visible');
+    document.getElementById('game').classList.add('has-ctrl');
+    window.removeEventListener('touchstart', enableCtrl);
+  }
+  if ('ontouchstart' in window || navigator.maxTouchPoints > 0) enableCtrl();
+  else window.addEventListener('touchstart', enableCtrl, { once: true });
+
+  function wire(id, onDown, onUp) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    ['touchstart','mousedown'].forEach(ev => el.addEventListener(ev, e => { e.preventDefault(); el.classList.add('pressed'); onDown(); }, { passive: false }));
+    ['touchend','touchcancel','mouseup','mouseleave'].forEach(ev => el.addEventListener(ev, e => { e.preventDefault(); el.classList.remove('pressed'); onUp(); }, { passive: false }));
+  }
+  const t = window.tIn;
+  wire('dp-left',  () => { t.left  = true;  t.leftTap  = true; }, () => { t.left  = false; });
+  wire('dp-right', () => { t.right = true;  t.rightTap = true; }, () => { t.right = false; });
+  wire('dp-up',    () => { t.up    = true;  }, () => { t.up    = false; });
+  wire('dp-down',  () => { t.down  = true;  }, () => { t.down  = false; });
+  wire('gb-a',     () => { t.space = true;  }, () => { t.space = false; });
+  wire('gb-b',     () => { t.space = true;  }, () => { t.space = false; });
+})();
+const W = 800, H = 600;
+
+// ─────────────────────────────────────────────────────────────
+// MAIN MENU
+// ─────────────────────────────────────────────────────────────
+class MainMenu extends Phaser.Scene {
+  constructor() { super('MainMenu'); }
+
+  create() {
+    this.add.rectangle(W/2, H/2, W, H, 0x0a0a1a);
+
+    // Animated road stripes
+    this.stripes = [];
+    for (let i = 0; i < 8; i++) {
+      const s = this.add.rectangle(W/2, i * 80, 6, 50, 0x333355);
+      this.stripes.push(s);
+    }
+
+    this.add.text(W/2, 70, 'CONNEXT', {
+      fontSize: '72px', fontFamily: 'Arial Black',
+      fill: '#00d4ff', stroke: '#003388', strokeThickness: 10
+    }).setOrigin(0.5);
+    this.add.text(W/2, 148, 'R U S H', {
+      fontSize: '36px', fontFamily: 'Arial Black',
+      fill: '#ff6600', stroke: '#000', strokeThickness: 4, letterSpacing: 18
+    }).setOrigin(0.5);
+    this.add.text(W/2, 195, 'The Broadband Adventure', {
+      fontSize: '18px', fontFamily: 'Arial', fill: '#8888aa', fontStyle: 'italic'
+    }).setOrigin(0.5);
+
+    const lvls = [
+      { label: '⚡  LEVEL 1 — FIBER FRENZY', sub: 'Dodge traffic & deliver the goods', scene: 'Level1', c: 0x003366 },
+      { label: '🔌  LEVEL 2 — LINE RUNNER',  sub: 'Route fiber underground',           scene: 'Level2', c: 0x003322 },
+      { label: '📦  LEVEL 3 — INSTALLER RUSH',sub: 'Install gear in the right rooms',  scene: 'Level3', c: 0x332200 },
+      { label: '🦣  LEVEL 4 — YETI RUN',     sub: 'Survive the mountain... if you can',scene: 'Level4', c: 0x1a001a },
+    ];
+
+    lvls.forEach((l, i) => {
+      const y = 268 + i * 64;
+      const bg = this.add.rectangle(W/2, y, 580, 52, l.c)
+        .setInteractive({ useHandCursor: true })
+        .setStrokeStyle(1, 0x334466);
+      this.add.text(W/2, y - 8, l.label, {
+        fontSize: '18px', fontFamily: 'Arial Black', fill: '#e0e8ff'
+      }).setOrigin(0.5);
+      this.add.text(W/2, y + 12, l.sub, {
+        fontSize: '12px', fontFamily: 'Arial', fill: '#667799'
+      }).setOrigin(0.5);
+      bg.on('pointerover', () => bg.setFillStyle(Phaser.Display.Color.ValueToColor(l.c).brighten(30).color));
+      bg.on('pointerout',  () => bg.setFillStyle(l.c));
+      bg.on('pointerdown', () => { this.registry.set('playAll', false); this.scene.start(l.scene); });
+    });
+
+    const playAll = this.add.rectangle(W/2, 548, 340, 54, 0xdd5500)
+      .setInteractive({ useHandCursor: true });
+    this.add.text(W/2, 548, '▶  PLAY ALL 4 LEVELS', {
+      fontSize: '22px', fontFamily: 'Arial Black', fill: '#fff'
+    }).setOrigin(0.5);
+    playAll.on('pointerover', () => playAll.setFillStyle(0xff7700));
+    playAll.on('pointerout',  () => playAll.setFillStyle(0xdd5500));
+    playAll.on('pointerdown', () => {
+      this.registry.set('playAll', true);
+      ['totalScore','l1','l2','l3','l4'].forEach(k => this.registry.set(k, 0));
+      this.scene.start('Level1');
+    });
+
+    this.add.text(W/2, 592, '← → or A D to steer  |  SPACE to interact', {
+      fontSize: '12px', fontFamily: 'Arial', fill: '#445566'
+    }).setOrigin(0.5);
+  }
+
+  update() {
+    this.stripes.forEach(s => { s.y += 2; if (s.y > H + 40) s.y = -40; });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// LEVEL 1 — FIBER FRENZY  (highway dodge)
+// ─────────────────────────────────────────────────────────────
+class Level1 extends Phaser.Scene {
+  constructor() { super('Level1'); }
+
+  create() {
+    this.score = 0;  this.hp = 4;  this.timeLeft = 40;
+    this.done = false; this.speed = 5; this.dist = 0;
+    this.lanes = [W/2 - 150, W/2 - 50, W/2 + 50, W/2 + 150];
+    this.lane = 1; this.targetX = this.lanes[1];
+    this.shieldOn = false; this.shieldMs = 0;
+    this.combo = 1; this.lastMove = 0;
+
+    // Road
+    this.add.rectangle(W/2, H/2, W, H, 0x2a2a2a);
+    this.add.rectangle(W/2 - 200, H/2, 2, H, 0xffffff);
+    this.add.rectangle(W/2 + 200, H/2, 2, H, 0xffffff);
+    this.add.rectangle(50,  H/2, 100, H, 0x3a5a3a); // grass L
+    this.add.rectangle(W-50,H/2, 100, H, 0x3a5a3a); // grass R
+
+    this.stripes = [];
+    for (let i = 0; i < 10; i++) {
+      this.stripes.push(this.add.rectangle(W/2 - 100, i * 70 - 35, 6, 44, 0xffee00));
+      this.stripes.push(this.add.rectangle(W/2,       i * 70 - 35, 6, 44, 0xffee00));
+      this.stripes.push(this.add.rectangle(W/2 + 100, i * 70 - 35, 6, 44, 0xffee00));
+    }
+
+    // Truck (player)
+    this.truck = this.add.container(this.targetX, H - 100);
+    const tb = this.add.rectangle(0, 5, 46, 78, 0xfafafa);
+    const tc = this.add.rectangle(0, -20, 42, 36, 0xddddee);
+    const tl = this.add.text(0, 12, 'CONNEXT', { fontSize: '7px', fill: '#003399', fontFamily: 'Arial Black' }).setOrigin(0.5);
+    const wfl = this.add.circle(-18, -28, 7, 0x111111);
+    const wfr = this.add.circle(18,  -28, 7, 0x111111);
+    const wrl = this.add.circle(-18,  28, 7, 0x111111);
+    const wrr = this.add.circle(18,   28, 7, 0x111111);
+    const ladder = this.add.rectangle(0, -10, 50, 6, 0xcccccc);
+    this.truck.add([tb, tc, tl, wfl, wfr, wrl, wrr, ladder]);
+
+    // Shield ring
+    this.shield = this.add.circle(this.targetX, H - 100, 44, 0x00d4ff, 0).setStrokeStyle(3, 0x00d4ff);
+
+    // Obstacle & powerup groups
+    this.obs = this.add.group();
+    this.pups = this.add.group();
+
+    // HUD
+    this.sTxt = this.add.text(10,10,'SCORE: 0',{fontSize:'20px',fontFamily:'Arial Black',fill:'#fff'});
+    this.hTxt = this.add.text(10,36,'❤️❤️❤️❤️',{fontSize:'20px'});
+    this.tTxt = this.add.text(W-10,10,'40',{fontSize:'20px',fontFamily:'Arial Black',fill:'#ffff00'}).setOrigin(1,0);
+    this.cTxt = this.add.text(W/2,10,'',{fontSize:'22px',fontFamily:'Arial Black',fill:'#ff8800'}).setOrigin(0.5,0);
+    this.add.text(W-10,36,'TIME',{fontSize:'12px',fill:'#888',fontFamily:'Arial'}).setOrigin(1,0);
+
+    this.showBanner('LEVEL 1: FIBER FRENZY', 'Reach the destination — dodge traffic!');
+
+    this.spawnEv = this.time.addEvent({ delay: 1400, callback: this.spawnObs, callbackScope: this, loop: true });
+    this.pupEv   = this.time.addEvent({ delay: 7000,  callback: this.spawnPup,  callbackScope: this, loop: true });
+    this.tickEv  = this.time.addEvent({
+      delay: 1000, loop: true, callback: () => {
+        if (this.done) return;
+        this.timeLeft--;
+        this.tTxt.setText(this.timeLeft);
+        if (this.timeLeft <= 0) this.winLevel();
+      }
+    });
+
+    this.keys = this.input.keyboard.addKeys({
+      left: Phaser.Input.Keyboard.KeyCodes.LEFT,
+      right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      a: Phaser.Input.Keyboard.KeyCodes.A,
+      d: Phaser.Input.Keyboard.KeyCodes.D,
+    });
+  }
+
+  spawnObs() {
+    if (this.done) return;
+    const laneIdx = Phaser.Math.Between(0, 3);
+    const x = this.lanes[laneIdx];
+    const kind = Phaser.Utils.Array.GetRandom(['car','car','truck','barrier']);
+    let color, w, h;
+    if (kind === 'car')     { color = [0xff3333,0x3399ff,0xffcc00,0x33cc33][Phaser.Math.Between(0,3)]; w=40; h=72; }
+    else if (kind === 'truck') { color = 0x886644; w=50; h=104; }
+    else                    { color = 0xff8800; w=80; h=28; }
+    const r = this.add.rectangle(x, -80, w, h, color);
+    r.laneIdx = laneIdx; r.nearDone = false;
+    this.obs.add(r);
+  }
+
+  spawnPup() {
+    if (this.done) return;
+    const laneIdx = Phaser.Math.Between(0, 3);
+    const kind = Phaser.Utils.Array.GetRandom(['turbo','shield','scanner']);
+    const cols = { turbo: 0xff6600, shield: 0x00ccff, scanner: 0x00ff88 };
+    const icons = { turbo: '⚡', shield: '🛡️', scanner: '📡' };
+    const c = this.add.container(this.lanes[laneIdx], -60);
+    c.add(this.add.circle(0,0,20, cols[kind]));
+    c.add(this.add.text(0,0,icons[kind],{fontSize:'18px'}).setOrigin(0.5));
+    c.kind = kind;
+    this.pups.add(c);
+  }
+
+  update(t, dt) {
+    if (this.done) return;
+
+    this.dist += this.speed;
+    this.speed = Math.min(5 + this.dist / 3000, 11);
+
+    // Lane input
+    if (t - this.lastMove > 190) {
+      const ti = window.tIn;
+      const goL = Phaser.Input.Keyboard.JustDown(this.keys.left) || Phaser.Input.Keyboard.JustDown(this.keys.a) || ti.leftTap;
+      const goR = Phaser.Input.Keyboard.JustDown(this.keys.right) || Phaser.Input.Keyboard.JustDown(this.keys.d) || ti.rightTap;
+      if (goL) ti.leftTap = false;
+      if (goR) ti.rightTap = false;
+      if (goL && this.lane > 0) { this.lane--; this.targetX = this.lanes[this.lane]; this.lastMove = t; }
+      if (goR && this.lane < 3) { this.lane++; this.targetX = this.lanes[this.lane]; this.lastMove = t; }
+    }
+    this.truck.x += (this.targetX - this.truck.x) * 0.22;
+    this.shield.x = this.truck.x; this.shield.y = this.truck.y;
+
+    // Road stripes
+    this.stripes.forEach(s => { s.y += this.speed; if (s.y > H + 30) s.y = -30; });
+
+    // Obstacles
+    this.obs.getChildren().forEach(o => {
+      o.y += this.speed;
+      const dx = Math.abs(o.x - this.truck.x);
+      const dy = Math.abs(o.y - this.truck.y);
+      if (!o.nearDone && dy < 65 && dx < 80) {
+        o.nearDone = true;
+        if (dx > 50) { this.score += 50 * this.combo; this.float(this.truck.x, this.truck.y-50, 'NEAR MISS +50', '#ff8800'); }
+      }
+      if (!this.shieldOn && dy < 38 && dx < 28) {
+        if (!o.hit) { o.hit = true; this.hitTruck(); o.destroy(); }
+      }
+      if (o.y > H + 80) { this.score += 10; o.destroy(); }
+    });
+
+    // Powerups
+    this.pups.getChildren().forEach(p => {
+      p.y += this.speed * 0.75;
+      if (Math.abs(p.y - this.truck.y) < 32 && Math.abs(p.x - this.truck.x) < 32) {
+        this.applyPup(p.kind); p.destroy();
+      }
+      if (p.y > H + 80) p.destroy();
+    });
+
+    // Shield
+    if (this.shieldOn) {
+      this.shieldMs -= dt;
+      this.shield.setAlpha(0.25 + 0.2 * Math.sin(t / 80));
+      if (this.shieldMs <= 0) { this.shieldOn = false; this.shield.setAlpha(0); }
+    }
+
+    this.score += 0.06 * this.speed;
+    this.sTxt.setText('SCORE: ' + Math.floor(this.score));
+  }
+
+  applyPup(k) {
+    if (k === 'turbo') {
+      this.speed += 4; this.time.delayedCall(3000, () => this.speed -= 4);
+      this.float(this.truck.x, this.truck.y - 60, 'TURBO! ⚡', '#ff6600');
+    } else if (k === 'shield') {
+      this.shieldOn = true; this.shieldMs = 5000;
+      this.float(this.truck.x, this.truck.y - 60, 'SHIELD! 🛡️', '#00d4ff');
+    } else {
+      this.combo = 3; this.cTxt.setText('3× COMBO');
+      this.time.delayedCall(5000, () => { this.combo = 1; this.cTxt.setText(''); });
+      this.float(this.truck.x, this.truck.y - 60, '3× SCANNER!', '#00ff88');
+    }
+  }
+
+  hitTruck() {
+    this.hp--;
+    this.cameras.main.shake(220, 0.02);
+    this.cameras.main.flash(80, 255, 0, 0);
+    const hearts = ['','❤️','❤️❤️','❤️❤️❤️','❤️❤️❤️❤️'];
+    this.hTxt.setText(this.hp > 0 ? hearts[this.hp] : '💔');
+    if (this.hp <= 0) this.loseLevel();
+  }
+
+  winLevel() {
+    if (this.done) return; this.done = true;
+    this.spawnEv.destroy(); this.tickEv.destroy();
+    this.endScreen('DELIVERY COMPLETE! 🚚', true, 'Level2');
+  }
+
+  loseLevel() {
+    if (this.done) return; this.done = true;
+    this.spawnEv.destroy(); this.tickEv.destroy();
+    this.endScreen('TRUCK WRECKED! 💥', false, 'Level1');
+  }
+
+  float(x, y, msg, col) {
+    const t = this.add.text(x, y, msg, { fontSize: '19px', fill: col, fontFamily: 'Arial Black', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 55, alpha: 0, duration: 1100, onComplete: () => t.destroy() });
+  }
+
+  showBanner(title, sub) {
+    const bg = this.add.rectangle(W/2, H/2, W, 86, 0x000000, 0.82);
+    const t1 = this.add.text(W/2, H/2 - 14, title, { fontSize: '28px', fontFamily: 'Arial Black', fill: '#00d4ff' }).setOrigin(0.5);
+    const t2 = this.add.text(W/2, H/2 + 18, sub,   { fontSize: '16px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5);
+    this.time.delayedCall(1500, () => { bg.destroy(); t1.destroy(); t2.destroy(); });
+  }
+
+  endScreen(msg, won, next) {
+    const sc = Math.floor(this.score);
+    const prev = this.registry.get('totalScore') || 0;
+    this.registry.set('totalScore', prev + sc);
+    this.registry.set('l1', sc);
+    this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.78);
+    this.add.text(W/2, H/2 - 80, won ? '🚚  DELIVERY COMPLETE!' : '💥  TRUCK WRECKED!', { fontSize: '30px', fontFamily: 'Arial Black', fill: won ? '#00ff88' : '#ff4444', stroke: '#000', strokeThickness: 4 }).setOrigin(0.5);
+    this.add.text(W/2, H/2 - 30, 'Score: ' + sc.toLocaleString(), { fontSize: '24px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5);
+    if (won) this.time.delayedCall(3500, () => this.scene.start(next));
+    this.btn(W/2, H/2 + 40, won ? 'NEXT LEVEL ▶' : 'TRY AGAIN', 0xdd5500, () => this.scene.start(next));
+    this.btn(W/2, H/2 + 96, 'MAIN MENU', 0x333344, () => this.scene.start('MainMenu'));
+  }
+
+  btn(x, y, label, col, cb) {
+    const b = this.add.rectangle(x, y, 260, 48, col).setInteractive({ useHandCursor: true });
+    this.add.text(x, y, label, { fontSize: '20px', fontFamily: 'Arial Black', fill: '#fff' }).setOrigin(0.5);
+    b.on('pointerover', () => b.setAlpha(0.8));
+    b.on('pointerout',  () => b.setAlpha(1));
+    b.on('pointerdown', cb);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// LEVEL 2 — LINE RUNNER  (underground wire routing)
+// ─────────────────────────────────────────────────────────────
+class Level2 extends Phaser.Scene {
+  constructor() { super('Level2'); }
+
+  create() {
+    this.score = 0; this.timeLeft = 80; this.done = false;
+    this.bends = 0; this.maxBends = 22; this.streak = 0;
+    this.drillX = 110; this.drillY = H / 2;
+    this.wirePoints = [{ x: 110, y: H / 2 }];
+    this.lastAngle = null; this.moving = false;
+    this.hazards = [];
+
+    // Dirt background
+    const g = this.add.graphics();
+    g.fillStyle(0x3d2b1f); g.fillRect(0, 0, W, H);
+    for (let i = 0; i < 200; i++) {
+      g.fillStyle(Math.random() > 0.5 ? 0x2d1b0f : 0x4d3b2f, 0.4);
+      g.fillRect(Phaser.Math.Between(0,W), Phaser.Math.Between(0,H), Phaser.Math.Between(4,18), Phaser.Math.Between(4,18));
+    }
+
+    // Van (start)
+    const van = this.add.container(70, H/2);
+    const vb = this.add.rectangle(0, 0, 68, 40, 0xfafafa);
+    const vl = this.add.text(0, 0, 'CONNEXT', { fontSize: '7px', fill: '#003399', fontFamily: 'Arial Black' }).setOrigin(0.5);
+    van.add([vb, vl]);
+
+    // Destination
+    this.add.rectangle(W - 50, H/2, 52, 52, 0x003366);
+    this.add.text(W - 50, H/2, '📦', { fontSize: '26px' }).setOrigin(0.5);
+    this.add.text(W - 50, H/2 - 38, 'DEST', { fontSize: '11px', fill: '#00d4ff', fontFamily: 'Arial Black' }).setOrigin(0.5);
+
+    // Destination glow (pulsing)
+    const destGlow = this.add.circle(W - 50, H/2, 34, 0x00d4ff, 0).setStrokeStyle(2, 0x00d4ff);
+    this.tweens.add({ targets: destGlow, scaleX: 1.4, scaleY: 1.4, alpha: 0.8, duration: 800, yoyo: true, repeat: -1 });
+
+    // Wire graphics
+    this.wireGfx = this.add.graphics();
+
+    // Drill head
+    this.drillHead = this.add.container(this.drillX, this.drillY);
+    const dh = this.add.circle(0, 0, 11, 0xffaa00);
+    const dt = this.add.text(0, 0, '⚙', { fontSize: '13px' }).setOrigin(0.5);
+    this.drillHead.add([dh, dt]);
+
+    // Hazards
+    this.buildHazards();
+
+    // HUD
+    this.sTxt = this.add.text(10, 10, 'SCORE: 0', { fontSize: '20px', fontFamily: 'Arial Black', fill: '#fff' });
+    this.tTxt = this.add.text(W - 10, 10, '80', { fontSize: '20px', fontFamily: 'Arial Black', fill: '#ffff00' }).setOrigin(1, 0);
+    this.bTxt = this.add.text(10, 36, 'BENDS: 0 / 22', { fontSize: '16px', fontFamily: 'Arial', fill: '#ff8800' });
+    this.add.text(W - 10, 36, 'TIME', { fontSize: '12px', fill: '#888', fontFamily: 'Arial' }).setOrigin(1, 0);
+    this.add.text(10, 56, 'WASD / ARROWS  |  reach the 📦', { fontSize: '11px', fill: '#556677', fontFamily: 'Arial' });
+
+    this.showBanner('LEVEL 2: LINE RUNNER', 'Route fiber to the box — avoid buried utilities!');
+
+    this.tickEv = this.time.addEvent({
+      delay: 1000, loop: true, callback: () => {
+        if (this.done) return;
+        this.timeLeft--;
+        this.tTxt.setText(this.timeLeft);
+        if (this.timeLeft <= 0) this.loseLevel('Time expired!');
+      }
+    });
+
+    this.keys = this.input.keyboard.addKeys({
+      left:  Phaser.Input.Keyboard.KeyCodes.LEFT,
+      right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      up:    Phaser.Input.Keyboard.KeyCodes.UP,
+      down:  Phaser.Input.Keyboard.KeyCodes.DOWN,
+      a: Phaser.Input.Keyboard.KeyCodes.A, d: Phaser.Input.Keyboard.KeyCodes.D,
+      w: Phaser.Input.Keyboard.KeyCodes.W, s: Phaser.Input.Keyboard.KeyCodes.S,
+    });
+  }
+
+  buildHazards() {
+    const types = [
+      { label: '💧', col: 0x0088ff, r: 28, name: 'Sprinkler' },
+      { label: '🔥', col: 0xff6600, r: 32, name: 'Gas Pipe' },
+      { label: '⚡', col: 0xffee00, r: 24, name: 'Power Line' },
+      { label: '🚰', col: 0x0044ff, r: 36, name: 'Water Main' },
+      { label: '🌳', col: 0x226622, r: 22, name: 'Tree Roots' },
+    ];
+
+    for (let i = 0; i < 14; i++) {
+      const tp = Phaser.Utils.Array.GetRandom(types);
+      let x, y, ok = false, tries = 0;
+      do {
+        x = Phaser.Math.Between(160, W - 100);
+        y = Phaser.Math.Between(55, H - 55);
+        ok = this.hazards.every(h => Phaser.Math.Distance.Between(h.x, h.y, x, y) > 88);
+        tries++;
+      } while (!ok && tries < 30);
+
+      const ring = this.add.circle(x, y, tp.r, tp.col, 0.25).setStrokeStyle(2, tp.col);
+      this.add.text(x, y, tp.label, { fontSize: '20px' }).setOrigin(0.5);
+      this.tweens.add({ targets: ring, scaleX: 1.35, scaleY: 1.35, alpha: 0.7, duration: 900 + i * 70, yoyo: true, repeat: -1 });
+
+      this.hazards.push({ x, y, r: tp.r, name: tp.name, ring, hit: false, nearDone: false });
+    }
+  }
+
+  update(t, dt) {
+    if (this.done) return;
+
+    let dx = 0, dy = 0;
+    const sp = 3.2;
+    const ti2 = window.tIn;
+    if (this.keys.left.isDown  || this.keys.a.isDown || ti2.left)  dx = -sp;
+    if (this.keys.right.isDown || this.keys.d.isDown || ti2.right) dx =  sp;
+    if (this.keys.up.isDown    || this.keys.w.isDown || ti2.up)    dy = -sp;
+    if (this.keys.down.isDown  || this.keys.s.isDown || ti2.down)  dy =  sp;
+
+    if (dx !== 0 || dy !== 0) {
+      const angle = Math.atan2(dy, dx);
+
+      if (this.lastAngle !== null) {
+        const diff = Math.abs(angle - this.lastAngle);
+        if (diff > 0.52 && diff < Math.PI * 2 - 0.52) {
+          this.bends++;
+          this.bTxt.setText('BENDS: ' + this.bends + ' / 22');
+          if (this.bends >= this.maxBends) { this.loseLevel('Wire snapped — too many bends!'); return; }
+        }
+      }
+      this.lastAngle = angle;
+
+      this.drillX = Phaser.Math.Clamp(this.drillX + dx, 112, W - 72);
+      this.drillY = Phaser.Math.Clamp(this.drillY + dy, 14, H - 14);
+      this.drillHead.setPosition(this.drillX, this.drillY);
+
+      const last = this.wirePoints[this.wirePoints.length - 1];
+      if (Phaser.Math.Distance.Between(last.x, last.y, this.drillX, this.drillY) > 5)
+        this.wirePoints.push({ x: this.drillX, y: this.drillY });
+
+      // Redraw wire
+      this.wireGfx.clear();
+      this.wireGfx.lineStyle(4, 0xffaa00, 1);
+      this.wireGfx.beginPath();
+      this.wireGfx.moveTo(this.wirePoints[0].x, this.wirePoints[0].y);
+      this.wirePoints.forEach(p => this.wireGfx.lineTo(p.x, p.y));
+      this.wireGfx.strokePath();
+
+      // Dirt particles
+      if (Math.random() > 0.65) {
+        const px = this.drillX + Phaser.Math.Between(-6, 6);
+        const py = this.drillY + Phaser.Math.Between(-6, 6);
+        const dp = this.add.circle(px, py, Phaser.Math.Between(2, 5), 0x7a5530);
+        this.tweens.add({ targets: dp, alpha: 0, scaleX: 0, scaleY: 0, duration: 380, onComplete: () => dp.destroy() });
+      }
+
+      // Hazard detection
+      this.hazards.forEach(h => {
+        if (h.hit) return;
+        const d = Phaser.Math.Distance.Between(this.drillX, this.drillY, h.x, h.y);
+        if (d < h.r) {
+          h.hit = true;
+          h.ring.setFillStyle(0xff0000, 0.6);
+          this.cameras.main.shake(350, 0.025);
+          this.cameras.main.flash(120, 255, 60, 0);
+          this.loseLevel('HIT: ' + h.name + '!');
+        } else if (d < h.r + 34 && !h.nearDone) {
+          h.nearDone = true;
+          this.streak++;
+          const bonus = 80 * this.streak;
+          this.score += bonus;
+          this.float(this.drillX, this.drillY - 30, 'CLOSE! +' + bonus, '#ff8800');
+          this.time.delayedCall(1200, () => { h.nearDone = false; });
+        }
+      });
+
+      // Destination check
+      if (Phaser.Math.Distance.Between(this.drillX, this.drillY, W - 50, H / 2) < 36) {
+        this.winLevel();
+      }
+
+      this.score += 0.08;
+      this.sTxt.setText('SCORE: ' + Math.floor(this.score));
+    }
+  }
+
+  float(x, y, msg, col) {
+    const t = this.add.text(x, y, msg, { fontSize: '17px', fill: col, fontFamily: 'Arial Black', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 52, alpha: 0, duration: 1100, onComplete: () => t.destroy() });
+  }
+
+  showBanner(title, sub) {
+    const bg = this.add.rectangle(W/2, H/2, W, 86, 0x000000, 0.82);
+    const t1 = this.add.text(W/2, H/2 - 14, title, { fontSize: '26px', fontFamily: 'Arial Black', fill: '#00d4ff' }).setOrigin(0.5);
+    const t2 = this.add.text(W/2, H/2 + 18, sub,   { fontSize: '15px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5);
+    this.time.delayedCall(2600, () => { bg.destroy(); t1.destroy(); t2.destroy(); });
+  }
+
+  winLevel() {
+    if (this.done) return; this.done = true;
+    this.tickEv.destroy();
+    const bonus = this.timeLeft * 18 + Math.max(0, (this.maxBends - this.bends) * 40);
+    this.score += bonus;
+    this.float(W/2, H/2 - 60, 'TIME BONUS +' + (this.timeLeft * 18), '#ffd700');
+    this.time.delayedCall(700, () => this.endScreen('CONNECTION ESTABLISHED! 🔌', true, 'Level3'));
+  }
+
+  loseLevel(reason) {
+    if (this.done) return; this.done = true;
+    this.tickEv.destroy();
+    this.endScreen('WIRE DAMAGED! 💥\n' + reason, false, 'Level2');
+  }
+
+  endScreen(msg, won, next) {
+    const sc = Math.floor(this.score);
+    this.registry.set('totalScore', (this.registry.get('totalScore') || 0) + sc);
+    this.registry.set('l2', sc);
+    this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.8);
+    this.add.text(W/2, H/2 - 110, won ? '🔌' : '💥', { fontSize: '60px' }).setOrigin(0.5);
+    this.add.text(W/2, H/2 - 40, msg, { fontSize: '28px', fontFamily: 'Arial Black', fill: won ? '#00ff88' : '#ff4444', stroke: '#000', strokeThickness: 4, align: 'center' }).setOrigin(0.5);
+    this.add.text(W/2, H/2 + 30, 'Score: ' + sc.toLocaleString(), { fontSize: '22px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5);
+    this.btn(W/2, H/2 + 90, won ? 'NEXT LEVEL ▶' : 'TRY AGAIN', 0xdd5500, () => this.scene.start(next));
+    this.btn(W/2, H/2 + 148, 'MAIN MENU', 0x333344, () => this.scene.start('MainMenu'));
+  }
+
+  btn(x, y, label, col, cb) {
+    const b = this.add.rectangle(x, y, 280, 46, col).setInteractive({ useHandCursor: true });
+    this.add.text(x, y, label, { fontSize: '20px', fontFamily: 'Arial Black', fill: '#fff' }).setOrigin(0.5);
+    b.on('pointerover', () => b.setAlpha(0.8)); b.on('pointerout', () => b.setAlpha(1)); b.on('pointerdown', cb);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// LEVEL 3 — INSTALLER RUSH  (house floor plan)
+// ─────────────────────────────────────────────────────────────
+class Level3 extends Phaser.Scene {
+  constructor() { super('Level3'); }
+
+  create() {
+    this.score = 0; this.timeLeft = 90; this.done = false;
+    this.installed = 0; this.taskIdx = 0; this.streak = 0;
+
+    // ── Outdoor yard (grass) ──
+    this.add.rectangle(W/2, H/2, W, H, 0x4a8a3a);
+
+    // ── House footprint: x:80–720, y:62–558 (640×496) ──
+    // Beige wall-fill base
+    this.add.rectangle(400, 310, 640, 496, 0xd4c5a9);
+
+    // ── Room floor fills ──
+    // Living Room  x:87–436, y:69–336  →  center(261,202) size(349,267)
+    this.add.rectangle(261, 202, 349, 267, 0xffdfb0);
+    // Kitchen      x:447–713, y:69–336  →  center(580,202) size(266,267)
+    this.add.rectangle(580, 202, 266, 267, 0xfff8cc);
+    // Bedroom      x:87–713, y:346–551  →  center(400,448) size(626,205)
+    this.add.rectangle(400, 448, 626, 205, 0xbcd8f5);
+
+    // ── Furniture: Living Room ──
+    this.add.rectangle(195, 310, 130, 46, 0x7a5535);        // couch seat
+    this.add.rectangle(195, 289, 138, 16, 0x9a6a45);        // couch back
+    this.add.rectangle(132, 305, 16, 38, 0x7a5535);         // arm L
+    this.add.rectangle(258, 305, 16, 38, 0x7a5535);         // arm R
+    this.add.rectangle(195, 268, 80, 30, 0xbb9966);         // coffee table
+    this.add.rectangle(256, 88, 78, 52, 0x111111);          // TV frame
+    this.add.rectangle(256, 88, 70, 44, 0x1a1a99);          // TV screen
+    this.add.rectangle(256, 115, 8, 14, 0x333333);          // TV stand
+    this.add.rectangle(220, 205, 120, 75, 0xcc8844, 0.5);   // rug
+
+    // ── Furniture: Kitchen ──
+    this.add.rectangle(580, 80, 244, 20, 0xa0b8b0);         // counter top
+    this.add.rectangle(580, 90, 244, 18, 0xb5ccc6);         // counter face
+    this.add.rectangle(556, 80, 30, 14, 0x607080);          // sink
+    this.add.rectangle(622, 79, 8,  8,  0x555555);          // stove burner
+    this.add.rectangle(635, 79, 8,  8,  0x555555);
+    this.add.rectangle(585, 270, 80, 55, 0xd4a870);         // kitchen table
+    this.add.rectangle(534, 270, 18, 44, 0xb08a5a);         // chair L
+    this.add.rectangle(636, 270, 18, 44, 0xb08a5a);         // chair R
+    this.add.rectangle(585, 244, 56, 18, 0xb08a5a);         // chair top
+    this.add.rectangle(585, 296, 56, 18, 0xb08a5a);         // chair bot
+
+    // ── Furniture: Bedroom ──
+    this.add.rectangle(215, 455, 188, 168, 0xe8d0b8);       // bed frame
+    this.add.rectangle(215, 370, 188, 22,  0xb09070);       // headboard
+    this.add.rectangle(215, 478, 178, 110, 0x6a9fcc);       // blanket
+    this.add.rectangle(196, 395, 66, 40,  0xfaf0e8);        // pillow L
+    this.add.rectangle(234, 395, 66, 40,  0xfaf0e8);        // pillow R
+    this.add.rectangle(315, 430, 44, 44,  0x9a7a55);        // nightstand
+    this.add.rectangle(600, 450, 90, 130, 0x9a7a55);        // dresser
+    this.add.rectangle(600, 393, 90, 26,  0xb89060);        // dresser top
+
+    // ── Windows on outer walls ──
+    this.add.rectangle(210, 62, 68, 10, 0xb0d4f8).setStrokeStyle(2, 0x80a8cc);
+    this.add.rectangle(610, 62, 48, 10, 0xb0d4f8).setStrokeStyle(2, 0x80a8cc);
+    this.add.rectangle(400, 558, 80, 10, 0xb0d4f8).setStrokeStyle(2, 0x80a8cc);
+
+    // ── Interior & exterior walls (drawn on top of floors) ──
+    const wg = this.add.graphics();
+    wg.lineStyle(13, 0x6b4423);
+    wg.strokeRect(80, 62, 640, 496);                        // outer walls
+
+    wg.lineStyle(10, 0x6b4423);
+    // Vertical wall (living | kitchen): x=440, y=62–336, door gap y=170–238
+    wg.beginPath(); wg.moveTo(440, 62);  wg.lineTo(440, 170); wg.strokePath();
+    wg.beginPath(); wg.moveTo(440, 238); wg.lineTo(440, 336); wg.strokePath();
+    // Horizontal wall (upper rooms | bedroom): y=336, x=80–720, door gap x=338–462
+    wg.beginPath(); wg.moveTo(80, 336);  wg.lineTo(338, 336); wg.strokePath();
+    wg.beginPath(); wg.moveTo(462, 336); wg.lineTo(720, 336); wg.strokePath();
+
+    // ── Door gap fills (match house floor tone) ──
+    this.add.rectangle(440, 204, 8, 68, 0xd4c5a9);          // vertical door
+    this.add.rectangle(400, 336, 124, 9, 0xd4c5a9);         // horizontal door
+
+    // ── Room name labels ──
+    this.add.text(97,  70, 'LIVING ROOM', { fontSize: '11px', fontFamily: 'Arial Black', fill: '#6b4423' });
+    this.add.text(452, 70, 'KITCHEN',     { fontSize: '11px', fontFamily: 'Arial Black', fill: '#6b4423' });
+    this.add.text(97, 343, 'BEDROOM',     { fontSize: '11px', fontFamily: 'Arial Black', fill: '#6b4423' });
+
+    // ── Room definitions for gameplay ──
+    this.roomDefs = {
+      living:  { x: 261, y: 202, w: 349, h: 267, name: 'Living Room', col: 0xffdfb0 },
+      kitchen: { x: 580, y: 202, w: 266, h: 267, name: 'Kitchen',     col: 0xfff8cc },
+      bedroom: { x: 400, y: 448, w: 626, h: 205, name: 'Bedroom',     col: 0xbcd8f5 },
+    };
+
+    // ── 3 tasks (one per room) ──
+    const allTasks = [
+      { room: 'living',  item: 'Modem',        emoji: '📦' },
+      { room: 'kitchen', item: 'WiFi Extender', emoji: '📶' },
+      { room: 'bedroom', item: 'Cable Box',     emoji: '📺' },
+    ];
+    this.tasks = Phaser.Utils.Array.Shuffle(allTasks.slice());
+
+    // ── Player (installer technician) ──
+    this.player = this.add.container(400, 340);
+    const pshirt = this.add.rectangle(0, 10, 22, 22, 0x003399);
+    const phead  = this.add.circle(0, -16, 12, 0xffcc88);
+    const phat   = this.add.rectangle(0, -26, 26, 8, 0xff6600);
+    const pbelt  = this.add.rectangle(0, 21, 24, 5, 0x8a5520);
+    const ptool  = this.add.rectangle(14, 14, 10, 14, 0x886600);
+    this.player.add([pshirt, phead, phat, pbelt, ptool]);
+
+    // ── Roaming obstacles ──
+    this.pets = [];
+    this.spawnPets();
+
+    // ── HUD ──
+    this.sTxt  = this.add.text(10, 10, 'SCORE: 0', { fontSize: '18px', fontFamily: 'Arial Black', fill: '#fff' });
+    this.tTxt  = this.add.text(W-10, 10, '90', { fontSize: '18px', fontFamily: 'Arial Black', fill: '#ffff00' }).setOrigin(1,0);
+    this.pTxt  = this.add.text(10, 34, 'CONNECTIONS: 0 / 3', { fontSize: '14px', fontFamily: 'Arial', fill: '#00d4ff' });
+    this.taskT = this.add.text(W/2, 8, '', { fontSize: '14px', fontFamily: 'Arial Black', fill: '#00ff88', align: 'center' }).setOrigin(0.5, 0);
+    this.add.text(W-10, 34, 'TIME', { fontSize: '12px', fill: '#888', fontFamily: 'Arial' }).setOrigin(1,0);
+    // Prominent SPACE bar instruction
+    this.add.rectangle(W/2, 52, 400, 22, 0x002244, 0.9);
+    this.add.text(W/2, 52, '[ SPACE ] = Connect Device   |   WASD / Arrows = Move', {
+      fontSize: '11px', fontFamily: 'Arial Black', fill: '#00d4ff'
+    }).setOrigin(0.5);
+
+    // ── Highlight overlay ──
+    this.hlGfx = this.add.graphics();
+
+    this.updateTask();
+    this.showBanner('LEVEL 3: INSTALLER RUSH', 'Walk into the glowing room — press SPACE to connect!');
+
+    this.tickEv = this.time.addEvent({
+      delay: 1000, loop: true, callback: () => {
+        if (this.done) return;
+        this.timeLeft--;
+        this.tTxt.setText(this.timeLeft);
+        if (this.timeLeft <= 0) this.loseLevel();
+      }
+    });
+
+    this.keys = this.input.keyboard.addKeys({
+      left:  Phaser.Input.Keyboard.KeyCodes.LEFT,  right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      up:    Phaser.Input.Keyboard.KeyCodes.UP,    down:  Phaser.Input.Keyboard.KeyCodes.DOWN,
+      a: Phaser.Input.Keyboard.KeyCodes.A, d: Phaser.Input.Keyboard.KeyCodes.D,
+      w: Phaser.Input.Keyboard.KeyCodes.W, s: Phaser.Input.Keyboard.KeyCodes.S,
+      space: Phaser.Input.Keyboard.KeyCodes.SPACE,
+    });
+    this.spaceDown = false;
+  }
+
+  spawnPets() {
+    const petDefs = [
+      { x: 200, y: 240, col: 0xff8800, size: 12, sp: 1.8, label: '🐱' },
+      { x: 530, y: 210, col: 0x8b4513, size: 14, sp: 2.0, label: '🐶' },
+      { x: 390, y: 430, col: 0xff4444, size: 15, sp: 1.4, label: '😤' },
+    ];
+    petDefs.forEach(d => {
+      const c = this.add.container(d.x, d.y);
+      c.add(this.add.circle(0, 0, d.size, d.col));
+      c.add(this.add.text(0, 0, d.label, { fontSize: '16px' }).setOrigin(0.5));
+      c.spd = d.sp; c.ang = Math.random() * Math.PI * 2;
+      this.pets.push(c);
+    });
+  }
+
+  updateTask() {
+    if (this.taskIdx < this.tasks.length) {
+      const t = this.tasks[this.taskIdx];
+      this.taskT.setText('CONNECT: ' + t.emoji + ' ' + t.item + '  →  ' + this.roomDefs[t.room].name.toUpperCase());
+    }
+  }
+
+  update(t, dt) {
+    if (this.done) return;
+
+    const sp = 3.2;
+    let dx = 0, dy = 0;
+    const ti3 = window.tIn;
+    if (this.keys.left.isDown  || this.keys.a.isDown || ti3.left)  dx = -sp;
+    if (this.keys.right.isDown || this.keys.d.isDown || ti3.right) dx =  sp;
+    if (this.keys.up.isDown    || this.keys.w.isDown || ti3.up)    dy = -sp;
+    if (this.keys.down.isDown  || this.keys.s.isDown || ti3.down)  dy =  sp;
+
+    this.player.x = Phaser.Math.Clamp(this.player.x + dx, 90, W - 90);
+    this.player.y = Phaser.Math.Clamp(this.player.y + dy, 75, H - 25);
+
+    if ((this.keys.space.isDown || ti3.space) && !this.spaceDown) {
+      this.spaceDown = true;
+      this.tryInstall();
+    }
+    if (!this.keys.space.isDown && !ti3.space) this.spaceDown = false;
+
+    this.pets.forEach(p => {
+      p.ang += 0.018;
+      p.x = Phaser.Math.Clamp(p.x + Math.cos(p.ang) * p.spd, 90, W - 90);
+      p.y = Phaser.Math.Clamp(p.y + Math.sin(p.ang) * p.spd, 75, H - 25);
+      if (Phaser.Math.Distance.Between(p.x, p.y, this.player.x, this.player.y) < 28) {
+        this.player.x -= (p.x - this.player.x) * 0.4;
+        this.player.y -= (p.y - this.player.y) * 0.4;
+        this.score = Math.max(0, this.score - 3);
+      }
+    });
+
+    if (this.taskIdx < this.tasks.length) {
+      const r = this.roomDefs[this.tasks[this.taskIdx].room];
+      const a = 0.5 + 0.5 * Math.sin(t / 180);
+      this.hlGfx.clear();
+      this.hlGfx.lineStyle(6, 0x00ff88, a);
+      this.hlGfx.strokeRect(r.x - r.w/2, r.y - r.h/2, r.w, r.h);
+    } else {
+      this.hlGfx.clear();
+    }
+
+    this.score += 0.04;
+    this.sTxt.setText('SCORE: ' + Math.floor(this.score));
+  }
+
+  tryInstall() {
+    if (this.taskIdx >= this.tasks.length) return;
+    const task = this.tasks[this.taskIdx];
+    const r = this.roomDefs[task.room];
+    const inRoom = Math.abs(this.player.x - r.x) < r.w/2 - 10 && Math.abs(this.player.y - r.y) < r.h/2 - 10;
+
+    if (inRoom) {
+      this.streak++;
+      const bonus = 200 + this.streak * 60 + this.timeLeft * 4;
+      this.score += bonus;
+      this.installed++;
+      this.pTxt.setText('CONNECTIONS: ' + this.installed + ' / 3');
+      this.float(this.player.x, this.player.y - 44, task.emoji + ' CONNECTED! +' + bonus, '#00ff88');
+      const flash = this.add.rectangle(r.x, r.y, r.w, r.h, 0x00ff88, 0.4);
+      this.tweens.add({ targets: flash, alpha: 0, duration: 600, onComplete: () => flash.destroy() });
+      this.taskIdx++;
+      if (this.taskIdx >= this.tasks.length) {
+        this.time.delayedCall(700, () => this.winLevel());
+      } else {
+        this.updateTask();
+      }
+    } else {
+      this.streak = 0;
+      this.score = Math.max(0, this.score - 120);
+      this.cameras.main.shake(200, 0.012);
+      this.float(this.player.x, this.player.y - 44, 'WRONG ROOM! −120', '#ff4444');
+    }
+  }
+
+  float(x, y, msg, col) {
+    const t = this.add.text(x, y, msg, { fontSize: '17px', fill: col, fontFamily: 'Arial Black', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 52, alpha: 0, duration: 1100, onComplete: () => t.destroy() });
+  }
+
+  showBanner(title, sub) {
+    const bg = this.add.rectangle(W/2, H/2, W, 86, 0x000000, 0.82);
+    const t1 = this.add.text(W/2, H/2 - 14, title, { fontSize: '26px', fontFamily: 'Arial Black', fill: '#00d4ff' }).setOrigin(0.5);
+    const t2 = this.add.text(W/2, H/2 + 18, sub,   { fontSize: '15px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5);
+    this.time.delayedCall(2800, () => { bg.destroy(); t1.destroy(); t2.destroy(); });
+  }
+
+  winLevel() {
+    if (this.done) return; this.done = true;
+    this.tickEv.destroy();
+    this.score += this.timeLeft * 25;
+    this.endScreen('ALL DEVICES CONNECTED! ✅', true, 'Level4');
+  }
+
+  loseLevel() {
+    if (this.done) return; this.done = true;
+    this.tickEv.destroy();
+    this.endScreen('INSTALLATION FAILED! ❌', false, 'Level3');
+  }
+
+  endScreen(msg, won, next) {
+    const sc = Math.floor(this.score);
+    this.registry.set('totalScore', (this.registry.get('totalScore') || 0) + sc);
+    this.registry.set('l3', sc);
+    this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.8);
+    this.add.text(W/2, H/2 - 110, won ? '✅' : '❌', { fontSize: '60px' }).setOrigin(0.5);
+    this.add.text(W/2, H/2 - 40, msg, { fontSize: '32px', fontFamily: 'Arial Black', fill: won ? '#00ff88' : '#ff4444', stroke: '#000', strokeThickness: 4 }).setOrigin(0.5);
+    this.add.text(W/2, H/2 + 20, 'Connections: ' + this.installed + ' / 3   Score: ' + sc.toLocaleString(), { fontSize: '20px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5);
+    this.btn(W/2, H/2 + 88, won ? 'FINAL LEVEL ▶' : 'TRY AGAIN', 0xdd5500, () => this.scene.start(next));
+    this.btn(W/2, H/2 + 144, 'MAIN MENU', 0x333344, () => this.scene.start('MainMenu'));
+  }
+
+  btn(x, y, label, col, cb) {
+    const b = this.add.rectangle(x, y, 280, 46, col).setInteractive({ useHandCursor: true });
+    this.add.text(x, y, label, { fontSize: '20px', fontFamily: 'Arial Black', fill: '#fff' }).setOrigin(0.5);
+    b.on('pointerover', () => b.setAlpha(0.8)); b.on('pointerout', () => b.setAlpha(1)); b.on('pointerdown', cb);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// LEVEL 4 — YETI RUN  (snowmobile survival)
+// ─────────────────────────────────────────────────────────────
+class Level4 extends Phaser.Scene {
+  constructor() { super('Level4'); }
+
+  create() {
+    this.done = true; // block update() until startGame() initializes everything
+    // Payday intro
+    this.add.rectangle(W/2, H/2, W, H, 0x000011);
+    const coin = this.add.text(W/2, H/2 - 80, '💰', { fontSize: '70px' }).setOrigin(0.5).setAlpha(0);
+    const t1   = this.add.text(W/2, H/2 + 10, 'YOU JUST GOT PAID', {
+      fontSize: '44px', fontFamily: 'Arial Black', fill: '#ffd700', stroke: '#000', strokeThickness: 6
+    }).setOrigin(0.5).setAlpha(0);
+    const t2 = this.add.text(W/2, H/2 + 70, '(Something is following you...)', {
+      fontSize: '18px', fontFamily: 'Arial', fill: '#aaaaaa', fontStyle: 'italic'
+    }).setOrigin(0.5).setAlpha(0);
+
+    this.tweens.add({ targets: coin, alpha: 1, duration: 800 });
+    this.tweens.add({ targets: t1, alpha: 1, duration: 800, delay: 400 });
+    this.tweens.add({ targets: t2, alpha: 1, duration: 800, delay: 1600 });
+    this.time.delayedCall(3200, () => this.startGame());
+  }
+
+  startGame() {
+    this.children.removeAll(true);
+
+    this.score = 0; this.alive = 0; this.done = false;
+    this.speed = 5; this.lanes = [W/2-180, W/2-90, W/2, W/2+90, W/2+180];
+    this.lane = 2; this.targetX = this.lanes[2];
+    this.yetiAppeared = false; this.yetiChasing = false;
+    this.yetiX = W/2; this.yetiY = H + 120;
+    this.lastMove = 0; this.fogAlpha = 0;
+
+    // Sky + mountains
+    this.add.rectangle(W/2, H/2, W, H, 0xb8d4f0);
+    this.add.triangle(0,H, 0,H, 180,H-220, 0x99aabb);
+    this.add.triangle(200,H, 80,H, 320,H-280, 0x8899aa);
+    this.add.triangle(480,H, 280,H, 600,H-260, 0x99aabb);
+    this.add.triangle(720,H, 520,H, W+20,H-200, 0x8899aa);
+    // Snow ground
+    this.add.rectangle(W/2, H-30, W, 60, 0xeef5ff);
+
+    // Side trees (decorative, scrolling)
+    this.treesL = this.add.group(); this.treesR = this.add.group();
+    for (let i = 0; i < 10; i++) {
+      this.makeTree(Phaser.Math.Between(0, W * 0.28), Phaser.Math.Between(0, H), this.treesL);
+      this.makeTree(Phaser.Math.Between(W * 0.72, W), Phaser.Math.Between(0, H), this.treesR);
+    }
+
+    // Speed lines
+    this.speedLines = [];
+    for (let i = 0; i < 22; i++) {
+      const sl = this.add.rectangle(Phaser.Math.Between(0,W), Phaser.Math.Between(0,H), 2, Phaser.Math.Between(30,70), 0xffffff, 0);
+      this.speedLines.push(sl);
+    }
+
+    // Snow particles
+    this.snow = [];
+    for (let i = 0; i < 90; i++) {
+      const s = this.add.circle(Phaser.Math.Between(0,W), Phaser.Math.Between(0,H), Phaser.Math.Between(1,4), 0xffffff, Phaser.Math.FloatBetween(0.5, 1));
+      s.vy = Phaser.Math.FloatBetween(1, 4); s.vx = Phaser.Math.FloatBetween(-0.8, 0.8);
+      this.snow.push(s);
+    }
+
+    // Obstacles group
+    this.obs = this.add.group();
+
+    // Player snowmobile (detailed)
+    this.sled = this.add.container(this.targetX, H - 120);
+
+    // Rear drive track
+    const track   = this.add.rectangle(0,  24, 46, 18, 0x111111);
+    const tRib1   = this.add.rectangle(-14,24,  3, 18, 0x2a2a2a);
+    const tRib2   = this.add.rectangle( -6,24,  3, 18, 0x2a2a2a);
+    const tRib3   = this.add.rectangle(  2,24,  3, 18, 0x2a2a2a);
+    const tRib4   = this.add.rectangle( 10,24,  3, 18, 0x2a2a2a);
+
+    // Front skis (splayed left/right)
+    const skiL    = this.add.rectangle(-26,  2,  9, 60, 0xcccccc);
+    const skiR    = this.add.rectangle( 26,  2,  9, 60, 0xcccccc);
+    const skiLtip = this.add.triangle(-26,-25, -31,-25, -21,-25, -26,-37, 0xdddddd);
+    const skiRtip = this.add.triangle( 26,-25,  21,-25,  31,-25,  26,-37, 0xdddddd);
+    const skiLsh  = this.add.rectangle(-25,  2,  3, 52, 0xeeeeee, 0.5);
+    const skiRsh  = this.add.rectangle( 25,  2,  3, 52, 0xeeeeee, 0.5);
+    const bindL   = this.add.rectangle(-26,  6, 11,  5, 0x777777);
+    const bindR   = this.add.rectangle( 26,  6, 11,  5, 0x777777);
+    const strutL  = this.add.rectangle(-18, -6,  7, 16, 0x666666);
+    const strutR  = this.add.rectangle( 18, -6,  7, 16, 0x666666);
+
+    // Body
+    const bodyBase = this.add.ellipse(0,  8, 52, 74, 0xcc3300);
+    const bodyCowl = this.add.ellipse(0, -2, 48, 58, 0xff5500);
+    const bodyHL   = this.add.ellipse(-8,-14, 18, 30, 0xff8844, 0.62);
+    const accentL  = this.add.rectangle(-16, 12, 16,  7, 0xdd2200, 0.9);
+    const accentR  = this.add.rectangle( 16, 12, 16,  7, 0xdd2200, 0.9);
+
+    // Nose cowl
+    const noseCowl = this.add.ellipse(0,-38, 38, 26, 0xff5500);
+    const noseTip  = this.add.ellipse(0,-51, 24, 14, 0xff4400);
+
+    // Windshield
+    const windshield = this.add.ellipse(0,-33, 28, 16, 0x88ccff, 0.76);
+    const wShine     = this.add.ellipse(-5,-35,  9,  6, 0xffffff, 0.36);
+
+    // Headlight
+    const hldGlow  = this.add.ellipse(0,-60, 18,  9, 0xffff99, 0.45);
+    const hldOuter = this.add.ellipse(0,-57, 22, 10, 0xffffcc, 0.9);
+    const hldInner = this.add.ellipse(0,-57, 13,  6, 0xffffff);
+
+    // Exhaust pipe (right)
+    const exPipe = this.add.rectangle(24, 14,  7, 18, 0x777777);
+    const exEnd  = this.add.ellipse( 24,  5,  9,  6, 0x555555);
+
+    // Handlebars
+    const hbar  = this.add.rectangle(0,-21, 40,  5, 0x444444);
+    const gripL = this.add.rectangle(-20,-21,  6, 12, 0x222222);
+    const gripR = this.add.rectangle( 20,-21,  6, 12, 0x222222);
+
+    // Rider — legs crouched over seat
+    const rLegs   = this.add.rectangle(0, 12, 26, 20, 0x1a1a2e);
+    // Rider — jacket
+    const rBody   = this.add.ellipse(0, -4, 28, 30, 0x0033bb);
+    const rChest  = this.add.ellipse(0, -7, 18, 20, 0x0044cc);
+    const rStripe = this.add.rectangle(0, -4, 28,  5, 0xff5500, 0.85);
+    // Arms on bars
+    const armL    = this.add.rectangle(-14,-18, 14,  6, 0x0033bb);
+    const armR    = this.add.rectangle( 14,-18, 14,  6, 0x0033bb);
+    // Helmet
+    const helm    = this.add.circle(0,-28, 14, 0x111111);
+    const helmRim = this.add.ellipse(0,-21, 28,  8, 0x1a1a1a);
+    const helmStr = this.add.rectangle(0,-35, 28,  5, 0xff5500);
+    const visor   = this.add.ellipse(3,-26, 15,  9, 0x55aaff, 0.88);
+    const visorSh = this.add.ellipse(0,-28,  5,  3, 0xffffff, 0.38);
+
+    // Connext decal on body
+    const decalBg = this.add.rectangle(0,  6, 30,  9, 0xffffff, 0.9);
+    const decalTx = this.add.text(0, 6, 'CONNEXT', { fontSize: '5px', fontFamily: 'Arial Black', fill: '#003399' }).setOrigin(0.5);
+
+    this.sled.add([
+      track, tRib1, tRib2, tRib3, tRib4,
+      skiL, skiR, skiLtip, skiRtip, skiLsh, skiRsh, bindL, bindR, strutL, strutR,
+      bodyBase, bodyCowl, bodyHL, accentL, accentR,
+      exPipe, exEnd,
+      noseCowl, noseTip,
+      windshield, wShine,
+      hldGlow, hldOuter, hldInner,
+      hbar, gripL, gripR,
+      rLegs, rBody, rChest, rStripe, armL, armR,
+      helm, helmRim, helmStr, visor, visorSh,
+      decalBg, decalTx
+    ]);
+
+    // Fog
+    this.fog = this.add.rectangle(W/2, H/2, W, H, 0xffffff, 0).setDepth(8);
+
+    // Yeti — detailed (~50 parts)
+    this.yetiC = this.add.container(W/2, H + 160).setDepth(9);
+
+    // Legs & feet (drawn first, behind body)
+    const yLegL = this.add.rectangle(-22, 70, 28, 40, 0xccccdc);
+    const yLegR = this.add.rectangle( 22, 70, 28, 40, 0xccccdc);
+    const yFtL  = this.add.ellipse(-22, 92, 34, 18, 0xbbbbce);
+    const yFtR  = this.add.ellipse( 22, 92, 34, 18, 0xbbbbce);
+
+    // Body shadow → main body → chest highlight
+    const yBOut = this.add.ellipse(0, 16, 94, 114, 0x8888a0);
+    const yBMn  = this.add.ellipse(0, 14, 84, 102, 0xe4e4f8);
+    const yBHL  = this.add.ellipse(-8, 2, 46, 64, 0xffffff, 0.26);
+
+    // Chest fur tufts
+    const yTf1 = this.add.ellipse(  0, 26, 40, 32, 0xf0f0ff, 0.55);
+    const yTf2 = this.add.ellipse(-12, 34, 24, 18, 0xf8f8ff, 0.5);
+    const yTf3 = this.add.ellipse( 12, 34, 24, 18, 0xf8f8ff, 0.5);
+
+    // Side fur tufts
+    const yFtSL = this.add.ellipse(-48, 16, 20, 44, 0xeeeefc, 0.5);
+    const yFtSR = this.add.ellipse( 48, 16, 20, 44, 0xeeeefc, 0.5);
+
+    // Shoulders
+    const yShL = this.add.ellipse(-52, -2, 42, 40, 0xdcdcf0);
+    const yShR = this.add.ellipse( 52, -2, 42, 40, 0xdcdcf0);
+
+    // Upper arms (angled outward)
+    const yUaL = this.add.rectangle(-62, 20, 26, 46, 0xdcdcf0);
+    const yUaR = this.add.rectangle( 62, 20, 26, 46, 0xdcdcf0);
+    yUaL.setAngle(-18); yUaR.setAngle(18);
+
+    // Lower arms (reaching forward)
+    const yLaL = this.add.rectangle(-72, 56, 22, 42, 0xd0d0e8);
+    const yLaR = this.add.rectangle( 72, 56, 22, 42, 0xd0d0e8);
+    yLaL.setAngle(-32); yLaR.setAngle(32);
+
+    // Hands
+    const yHndL = this.add.ellipse(-78, 78, 30, 22, 0xd4d4ec);
+    const yHndR = this.add.ellipse( 78, 78, 30, 22, 0xd4d4ec);
+
+    // Claws (3 per hand)
+    const yCL1 = this.add.triangle(-86, 82, -5,0, 5,0, 0,15, 0x444455);
+    const yCL2 = this.add.triangle(-78, 86, -5,0, 5,0, 0,15, 0x444455);
+    const yCL3 = this.add.triangle(-70, 82, -5,0, 5,0, 0,15, 0x444455);
+    const yCR1 = this.add.triangle( 86, 82, -5,0, 5,0, 0,15, 0x444455);
+    const yCR2 = this.add.triangle( 78, 86, -5,0, 5,0, 0,15, 0x444455);
+    const yCR3 = this.add.triangle( 70, 82, -5,0, 5,0, 0,15, 0x444455);
+
+    // Head base + highlight
+    const yHdBs = this.add.circle(0, -52, 42, 0xdcdcf0);
+    const yHdHL = this.add.ellipse(-10, -62, 32, 28, 0xffffff, 0.26);
+
+    // Ears + inner ears
+    const yEarL  = this.add.circle(-40, -82, 16, 0xdcdcf0);
+    const yEarR  = this.add.circle( 40, -82, 16, 0xdcdcf0);
+    const yEarLi = this.add.circle(-40, -82,  9, 0xffaaaa);
+    const yEarRi = this.add.circle( 40, -82,  9, 0xffaaaa);
+
+    // Eye glow → iris → pupil → shine
+    const yEGlL = this.add.circle(-17, -56, 17, 0xff0000, 0.38);
+    const yEGlR = this.add.circle( 17, -56, 17, 0xff0000, 0.38);
+    const yEyeL = this.add.circle(-17, -56, 12, 0xcc0000);
+    const yEyeR = this.add.circle( 17, -56, 12, 0xcc0000);
+    const yPupL = this.add.circle(-15, -54,  5, 0x110000);
+    const yPupR = this.add.circle( 19, -54,  5, 0x110000);
+    const yEShL = this.add.circle(-20, -61,  4, 0xff6666);
+    const yEShR = this.add.circle( 14, -61,  4, 0xff6666);
+
+    // Menacing angled eyebrows (\  /)
+    const yBrwL = this.add.rectangle(-16, -72, 24, 7, 0x666677);
+    const yBrwR = this.add.rectangle( 16, -72, 24, 7, 0x666677);
+    yBrwL.setAngle(22); yBrwR.setAngle(-22);
+
+    // Snout / muzzle + nose + nostrils
+    const yMuzz  = this.add.ellipse(0, -38, 36, 24, 0xededff);
+    const yNose  = this.add.ellipse(0, -43, 20, 11, 0x7a7a8c);
+    const yNosL  = this.add.circle(-6, -43, 4, 0x444455);
+    const yNosR  = this.add.circle( 6, -43, 4, 0x444455);
+
+    // Open snarling mouth: dark cavity + tongue + upper fangs
+    const yMthBg = this.add.arc(0, -30, 15, 180, 360, false, 0x0d0d1a);
+    const yTong  = this.add.ellipse(0, -25, 18, 11, 0xcc3344);
+    const yFngL  = this.add.triangle(-7, -28, -5,0, 5,0, 0,13, 0xffffff);
+    const yFngR  = this.add.triangle( 7, -28, -5,0, 5,0, 0,13, 0xffffff);
+
+    this.yetiC.add([
+      yLegL, yLegR, yFtL, yFtR,
+      yBOut, yBMn, yBHL,
+      yTf1, yTf2, yTf3,
+      yFtSL, yFtSR,
+      yShL, yShR,
+      yUaL, yUaR, yLaL, yLaR,
+      yHndL, yHndR,
+      yCL1, yCL2, yCL3, yCR1, yCR2, yCR3,
+      yHdBs, yHdHL,
+      yEarL, yEarR, yEarLi, yEarRi,
+      yEGlL, yEGlR, yEyeL, yEyeR, yPupL, yPupR, yEShL, yEShR,
+      yBrwL, yBrwR,
+      yMuzz, yNose, yNosL, yNosR,
+      yMthBg, yTong, yFngL, yFngR
+    ]);
+
+    // HUD (above fog)
+    this.sTxt = this.add.text(10, 10, 'SCORE: 0', { fontSize: '20px', fontFamily: 'Arial Black', fill: '#003366' }).setDepth(20);
+    this.tTxt = this.add.text(W/2, 10, 'SURVIVE!', { fontSize: '22px', fontFamily: 'Arial Black', fill: '#cc0000', stroke: '#fff', strokeThickness: 3 }).setOrigin(0.5,0).setDepth(20);
+    this.spTxt = this.add.text(W-10, 10, 'SPEED: 1.0x', { fontSize: '16px', fontFamily: 'Arial Black', fill: '#003366' }).setOrigin(1,0).setDepth(20);
+    this.add.text(10, 34, '← → or A D to steer', { fontSize: '11px', fill: '#334455', fontFamily: 'Arial' }).setDepth(20);
+
+    this.showBanner('LEVEL 4: YETI RUN', 'Survive the mountain — something is hunting you...');
+
+    this.spawnEv = this.time.addEvent({ delay: 750, callback: this.spawnObs, callbackScope: this, loop: true });
+    this.mainEv  = this.time.addEvent({
+      delay: 100, loop: true, callback: () => {
+        if (this.done) return;
+        this.alive += 0.1;
+        this.score += Math.ceil(this.speed * 0.8);
+        this.speed = Math.min(5 + this.alive * 0.15, 22);
+        this.spTxt.setText('SPEED: ' + this.speed.toFixed(1) + 'x');
+
+        // Yeti appears at 28 s
+        if (this.alive > 28 && !this.yetiAppeared) { this.yetiAppeared = true; this.summonYeti(); }
+
+        // Guaranteed catch after 100 s (yeti wins no matter what)
+        if (this.alive > 100 && this.yetiChasing && !this.done) {
+          this.yetiC.y = this.sled.y;
+          this.yetiCatch();
+        }
+      }
+    });
+
+    this.keys = this.input.keyboard.addKeys({
+      left: Phaser.Input.Keyboard.KeyCodes.LEFT,
+      right: Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      a: Phaser.Input.Keyboard.KeyCodes.A,
+      d: Phaser.Input.Keyboard.KeyCodes.D,
+    });
+  }
+
+  makeTree(x, y, group) {
+    const c = this.add.container(x, y);
+    c.add(this.add.rectangle(0, 16, 11, 28, 0x8b4513));
+    c.add(this.add.triangle(0, -10, -18,18, 18,18, 0,-30, 0x1a6622));
+    c.add(this.add.triangle(0,  2, -13,14, 13,14, 0,-18, 0x22882a));
+    c.scrollFactor = 1;
+    group.add(c);
+    return c;
+  }
+
+  spawnObs() {
+    if (this.done) return;
+    const laneIdx = Phaser.Math.Between(0, 4);
+    const x = this.lanes[laneIdx];
+    const kind = Phaser.Utils.Array.GetRandom(['tree','tree','rock','ice','ice']);
+    const c = this.add.container(x, -70);
+
+    if (kind === 'tree') {
+      c.add(this.add.rectangle(0, 14, 12, 26, 0x8b4513));
+      c.add(this.add.triangle(0,-8,-18,16,18,16, 0,-26, 0x1a6622));
+    } else if (kind === 'rock') {
+      c.add(this.add.ellipse(0, 0, 36, 28, 0x777777));
+      c.add(this.add.ellipse(-6, -4, 20, 15, 0x999999));
+    } else {
+      c.add(this.add.rectangle(0, 0, 44, 18, 0xaaddff, 0.85));
+      c.isIce = true;
+    }
+    c.laneIdx = laneIdx;
+    this.obs.add(c);
+  }
+
+  summonYeti() {
+    const warn = this.add.text(W/2, H/2, '⚠️  YETI APPROACHING!  ⚠️', {
+      fontSize: '34px', fontFamily: 'Arial Black', fill: '#ff0000', stroke: '#fff', strokeThickness: 4
+    }).setOrigin(0.5).setDepth(30);
+    this.cameras.main.shake(600, 0.03);
+    this.tTxt.setText('🦣  RUN!!!');
+    this.time.delayedCall(2200, () => {
+      warn.destroy();
+      this.yetiChasing = true;
+      this.yetiC.y = H + 60;
+    });
+  }
+
+  update(t, dt) {
+    if (this.done) return;
+
+    // Input
+    if (t - this.lastMove > 175) {
+      const ti4 = window.tIn;
+      const mvL = Phaser.Input.Keyboard.JustDown(this.keys.left)  || Phaser.Input.Keyboard.JustDown(this.keys.a)  || ti4.leftTap;
+      const mvR = Phaser.Input.Keyboard.JustDown(this.keys.right) || Phaser.Input.Keyboard.JustDown(this.keys.d)  || ti4.rightTap;
+      if (mvL) ti4.leftTap = false;
+      if (mvR) ti4.rightTap = false;
+      if (mvL && this.lane > 0) { this.lane--; this.targetX = this.lanes[this.lane]; this.lastMove = t; }
+      if (mvR && this.lane < 4) { this.lane++; this.targetX = this.lanes[this.lane]; this.lastMove = t; }
+    }
+    this.sled.x += (this.targetX - this.sled.x) * 0.22;
+
+    // Scroll decorative trees
+    [this.treesL, this.treesR].forEach(grp => {
+      grp.getChildren().forEach(tr => {
+        tr.y += this.speed * 0.55;
+        if (tr.y > H + 60) tr.y = -60;
+      });
+    });
+
+    // Snow
+    this.snow.forEach(s => {
+      s.y += s.vy + this.speed * 0.25; s.x += s.vx;
+      if (s.y > H) s.y = 0; if (s.x < 0) s.x = W; if (s.x > W) s.x = 0;
+    });
+
+    // Speed lines (more visible at high speed)
+    const lineAlpha = Math.min(0.7, (this.speed - 5) / 12);
+    this.speedLines.forEach(sl => {
+      sl.y += this.speed * 1.8; if (sl.y > H) sl.y = -70;
+      sl.setAlpha(lineAlpha);
+    });
+
+    // Obstacles
+    this.obs.getChildren().forEach(o => {
+      o.y += this.speed;
+      if (!o.hit && !o.isIce && Math.abs(o.y - this.sled.y) < 30 && Math.abs(o.x - this.sled.x) < 28) {
+        o.hit = true;
+        this.cameras.main.shake(300, 0.03);
+        this.cameras.main.flash(100, 255, 255, 255);
+        this.yetiCatch(); // crash = yeti gets you
+      }
+      if (o.isIce && !o.hit && Math.abs(o.y - this.sled.y) < 20 && Math.abs(o.x - this.sled.x) < 26) {
+        o.hit = true;
+        this.float(this.sled.x, this.sled.y - 40, 'ICE PATCH!', '#aaddff');
+      }
+      if (o.y > H + 80) { this.score += 15; o.destroy(); }
+    });
+
+    // Yeti chasing
+    if (this.yetiChasing) {
+      this.yetiC.y += (this.sled.y + 170 - this.yetiC.y) * 0.025;
+      this.yetiC.x += (this.sled.x - this.yetiC.x) * 0.018;
+
+      // Body wobble
+      this.yetiC.angle = Math.sin(this.alive * 4) * 6;
+
+      if (!this.done && this.yetiC.y < this.sled.y + 90) this.yetiCatch();
+
+      // Occasional roar
+      if (Math.random() < 0.003) this.float(this.yetiC.x, this.yetiC.y - 90, 'ROOAAARRR! 🦣', '#fff');
+    }
+
+    // Fog
+    if (this.alive > 18) {
+      this.fogAlpha = Math.min(0.28, (this.alive - 18) / 110);
+      this.fog.setAlpha(this.fogAlpha);
+    }
+
+    this.sTxt.setText('SCORE: ' + Math.floor(this.score));
+  }
+
+  float(x, y, msg, col) {
+    const t = this.add.text(x, y, msg, { fontSize: '17px', fill: col, fontFamily: 'Arial Black', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5).setDepth(25);
+    this.tweens.add({ targets: t, y: y - 48, alpha: 0, duration: 1000, onComplete: () => t.destroy() });
+  }
+
+  showBanner(title, sub) {
+    const bg = this.add.rectangle(W/2, H/2, W, 86, 0x000000, 0.82).setDepth(30);
+    const t1 = this.add.text(W/2, H/2 - 14, title, { fontSize: '26px', fontFamily: 'Arial Black', fill: '#00d4ff' }).setOrigin(0.5).setDepth(31);
+    const t2 = this.add.text(W/2, H/2 + 18, sub,   { fontSize: '15px', fontFamily: 'Arial', fill: '#fff' }).setOrigin(0.5).setDepth(31);
+    this.time.delayedCall(2600, () => { bg.destroy(); t1.destroy(); t2.destroy(); });
+  }
+
+  yetiCatch() {
+    if (this.done) return; this.done = true;
+    this.spawnEv.destroy(); this.mainEv.destroy();
+
+    // Yeti lunges
+    this.tweens.add({
+      targets: this.yetiC, y: this.sled.y, x: this.sled.x, duration: 700,
+      onComplete: () => {
+        this.sled.setVisible(false);
+        this.cameras.main.shake(500, 0.05);
+        this.cameras.main.flash(200, 255, 0, 0);
+
+        // Eating text
+        const eat = this.add.text(W/2, H/2, '🦣 OMNOMNOM 🦣', {
+          fontSize: '44px', fontFamily: 'Arial Black', fill: '#fff', stroke: '#000', strokeThickness: 6
+        }).setOrigin(0.5).setDepth(40);
+        this.tweens.add({ targets: eat, angle: [-8,8,-8,8,0], scaleX: [1,1.15,1], scaleY: [1,1.15,1], duration: 300, repeat: 3 });
+
+        this.time.delayedCall(2000, () => this.showFinalScreen());
+      }
+    });
+  }
+
+  showFinalScreen() {
+    this.children.removeAll(true);
+    this.add.rectangle(W/2, H/2, W, H, 0x000011);
+
+    // Thanks
+    this.add.text(W/2, 52, 'Thanks For Choosing', {
+      fontSize: '22px', fontFamily: 'Arial', fill: '#8888aa', fontStyle: 'italic'
+    }).setOrigin(0.5);
+    this.add.text(W/2, 96, 'CONNEXT', {
+      fontSize: '66px', fontFamily: 'Arial Black', fill: '#00d4ff', stroke: '#003388', strokeThickness: 10
+    }).setOrigin(0.5);
+    this.add.text(W/2, 154, '⚡  Broadband That Keeps You Connected  ⚡', {
+      fontSize: '14px', fontFamily: 'Arial', fill: '#ff6600'
+    }).setOrigin(0.5);
+
+    // Score breakdown
+    const sc4 = Math.floor(this.score);
+    this.registry.set('l4', sc4);
+    this.registry.set('totalScore', (this.registry.get('totalScore') || 0) + sc4);
+
+    const l1 = this.registry.get('l1') || 0;
+    const l2 = this.registry.get('l2') || 0;
+    const l3 = this.registry.get('l3') || 0;
+    const l4 = this.registry.get('l4') || 0;
+    const total = l1 + l2 + l3 + l4;
+
+    this.add.rectangle(W/2, 348, 520, 240, 0x001133, 0.92).setStrokeStyle(1, 0x003366);
+    this.add.text(W/2, 246, '📊  FINAL SCORE REPORT', {
+      fontSize: '22px', fontFamily: 'Arial Black', fill: '#ffd700'
+    }).setOrigin(0.5);
+
+    const rows = [
+      ['🚚  Fiber Frenzy', l1],
+      ['🔌  Line Runner',  l2],
+      ['📦  Installer Rush', l3],
+      ['🦣  Yeti Run',     l4],
+    ];
+    rows.forEach(([label, val], i) => {
+      this.add.text(W/2 - 200, 278 + i * 36, label, { fontSize: '16px', fontFamily: 'Courier New', fill: '#ccd8ee' });
+      this.add.text(W/2 + 200, 278 + i * 36, val.toLocaleString() + ' pts', { fontSize: '16px', fontFamily: 'Courier New', fill: '#ffd700' }).setOrigin(1, 0);
+    });
+    this.add.rectangle(W/2, 436, 480, 2, 0x00d4ff);
+    this.add.text(W/2, 454, 'TOTAL:  ' + total.toLocaleString() + ' pts', {
+      fontSize: '26px', fontFamily: 'Arial Black', fill: '#ffd700'
+    }).setOrigin(0.5);
+
+    let rating = '⭐ Novice Installer';
+    if (total > 5000)  rating = '⭐⭐ Field Tech';
+    if (total > 15000) rating = '⭐⭐⭐ Senior Installer';
+    if (total > 30000) rating = '⭐⭐⭐⭐ Lead Technician';
+    if (total > 55000) rating = '⭐⭐⭐⭐⭐ MASTER CONNECTOR';
+
+    this.add.text(W/2, 497, rating, {
+      fontSize: '20px', fontFamily: 'Arial Black', fill: '#ff8800'
+    }).setOrigin(0.5);
+
+    // Survived time
+    this.add.text(W/2, 526, 'Survived: ' + Math.floor(this.alive) + 's on the mountain', {
+      fontSize: '14px', fontFamily: 'Arial', fill: '#6688aa'
+    }).setOrigin(0.5);
+
+    const pb = this.add.rectangle(W/2, 572, 300, 50, 0xdd5500).setInteractive({ useHandCursor: true });
+    this.add.text(W/2, 572, '▶  PLAY AGAIN', { fontSize: '22px', fontFamily: 'Arial Black', fill: '#fff' }).setOrigin(0.5);
+    pb.on('pointerover', () => pb.setFillStyle(0xff7700));
+    pb.on('pointerout',  () => pb.setFillStyle(0xdd5500));
+    pb.on('pointerdown', () => {
+      ['totalScore','l1','l2','l3','l4'].forEach(k => this.registry.set(k, 0));
+      this.scene.start('MainMenu');
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BOOT
+// ─────────────────────────────────────────────────────────────
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W, height: H,
+  backgroundColor: '#0a0a1a',
+  parent: 'game',
+  scene: [MainMenu, Level1, Level2, Level3, Level4],
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.NO_CENTER
+  }
+});
+</script>
+</body>
+</html>
